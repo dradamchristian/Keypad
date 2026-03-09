@@ -2,21 +2,24 @@ This build uses clipboard snippets for all 'Canned' macros.
 Files are in /snippets and are loaded via PowerShell Set-Clipboard.
 Press the macro: it copies the snippet, then pastes (Ctrl+V).
 
-On-device macro editor
-- Open editor: hold encoder button + press key 12.
-- Rotate encoder: change layer.
-- Hold encoder + rotate: change key within layer.
-- Key 9: cycle mode (label / macro / clear).
-- Key 10: edit selected field.
-- Key 11: done.
+PC macro menu/editor (recommended workflow)
+- Run `python menu_simulator.py --edit` on your PC.
+- Pick a layer (rotary submenu equivalent), then pick a key (1-12).
+- Edit:
+  - label (what appears on the device)
+  - macro tokens (typed text + keystrokes)
+- Save. Changes go to `macros/overrides.json`.
 
-Macro token syntax for editable macros
+Token syntax for macro editor
 - Plain text types directly.
-- Single key: <ENTER>, <TAB>, <F5>
-- Chord: <CONTROL+V>, <SHIFT+TAB>
+- Single key: `<ENTER>`, `<TAB>`, `<F5>`
+- Chord: `<CONTROL+V>`, `<SHIFT+TAB>`
 
-Edits are stored in /macros/overrides.json so original macro files are unchanged.
+Device behavior
+- Existing macro `.py` files remain unchanged.
+- On boot, device loads base layer files and applies `macros/overrides.json` on top.
 
-Testing menu changes without device
-- Run `python menu_simulator.py` on your computer to preview each layer and any overrides.
-- Run `python menu_simulator.py --layer 02_reports.py` to preview one layer.
+Testing menu changes without loading to device each time
+- Preview all layers: `python menu_simulator.py`
+- Preview one layer: `python menu_simulator.py --layer 02_reports.py`
+- Edit from PC menu: `python menu_simulator.py --edit`

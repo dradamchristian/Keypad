@@ -306,142 +306,9 @@ def apply_layer_override(filename, base_app):
     return out
 
 
-EDIT_CHARS = " ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.,;:/-_@#()+!?"
 
+# PC-side editor writes /macros/overrides.json; device only loads overrides.
 
-def text_editor(initial, title_text, max_len=120):
-    global is_running, last_pos
-    was_running = is_running
-    is_running = True
-    old_title = title.text
-    buffer = list(initial)
-    cursor = 0
-    base = macropad.encoder
-    done = False
-
-    def render():
-        for j in range(12):
-            key_labels[j].text = ""
-        title.text = title_text
-        key_labels[0].text = "{}".format("".join(buffer[-14:]) or "(empty)")
-        key_labels[3].text = "Char: {}".format(EDIT_CHARS[cursor])
-        key_labels[6].text = "K0 add  K1 bksp"
-        key_labels[9].text = "K2 save K3 cancel"
-
-    render(); note_activity()
-    try:
-        while True:
-            pos = macropad.encoder
-            if pos != base:
-                delta = pos - base
-                base = pos
-                cursor = (cursor + delta) % len(EDIT_CHARS)
-                render(); note_activity()
-            ev = macropad.keys.events.get()
-            if ev and ev.pressed:
-                k = ev.key_number
-                if k == 0 and len(buffer) < max_len:
-                    buffer.append(EDIT_CHARS[cursor]); render()
-                elif k == 1 and buffer:
-                    buffer.pop(); render()
-                elif k == 2:
-                    done = True
-                    break
-                elif k == 3:
-                    done = False
-                    break
-                note_activity()
-            update_breathing(); time.sleep(0.02)
-    finally:
-        load_layer(current_index)
-        title.text = old_title
-        is_running = was_running
-        last_pos = macropad.encoder
-        note_activity()
-    return "".join(buffer) if done else None
-
-
-def open_macro_editor():
-    global is_running, last_pos
-    was_running = is_running
-    is_running = True
-    old_title = title.text
-    file_idx = current_index
-    key_idx = 0
-    mode = 0
-
-    def current_filename():
-        return macro_files[file_idx]
-
-    def get_macro_tuple():
-        m = app.get("macros", [])
-        if key_idx < len(m):
-            return m[key_idx]
-        return (0x202020, "", [])
-
-    def render():
-        for j in range(12):
-            key_labels[j].text = ""
-        col, lbl, seq = get_macro_tuple()
-        title.text = "Editor"
-        key_labels[0].text = "L:{}".format(current_filename()[:10])
-        key_labels[3].text = "K{} {}".format(key_idx + 1, lbl or "(empty)")
-        key_labels[6].text = ["K4 label", "K4 macro", "K4 clr"][mode]
-        key_labels[9].text = "Rot L/K  K8 mode"
-        key_labels[10].text = "K9 edit"
-        key_labels[11].text = "K10 done"
-
-    base = macropad.encoder
-    last_pos = base
-    render(); note_activity()
-    try:
-        while True:
-            pos = macropad.encoder
-            if pos != base:
-                delta = pos - base
-                base = pos
-                if macropad.encoder_switch:
-                    key_idx = (key_idx + delta) % 12
-                else:
-                    file_idx = (file_idx + delta) % len(macro_files)
-                    load_layer(file_idx)
-                render(); note_activity()
-            ev = macropad.keys.events.get()
-            if ev and ev.pressed:
-                k = ev.key_number
-                if k == 8:
-                    mode = (mode + 1) % 3
-                elif k == 9:
-                    data = read_overrides()
-                    fn = current_filename()
-                    layer = data.get(fn, {})
-                    current = layer.get(str(key_idx), {})
-                    if mode == 0:
-                        new_label = text_editor(current.get("label", get_macro_tuple()[1]), "Label", 8)
-                        if new_label is not None:
-                            tokens = current.get("tokens", sequence_to_tokens(get_macro_tuple()[2]))
-                            layer[str(key_idx)] = {"label": new_label, "tokens": tokens, "color": int(get_macro_tuple()[0])}
-                    elif mode == 1:
-                        new_tokens = text_editor(current.get("tokens", sequence_to_tokens(get_macro_tuple()[2])), "Macro", 140)
-                        if new_tokens is not None:
-                            label_text = current.get("label", get_macro_tuple()[1])
-                            layer[str(key_idx)] = {"label": label_text[:8], "tokens": new_tokens, "color": int(get_macro_tuple()[0])}
-                    else:
-                        if str(key_idx) in layer:
-                            del layer[str(key_idx)]
-                    data[fn] = layer
-                    write_overrides(data)
-                    load_layer(file_idx)
-                elif k == 10:
-                    break
-                render(); note_activity()
-            update_breathing(); time.sleep(0.02)
-    finally:
-        load_layer(current_index)
-        title.text = old_title
-        is_running = was_running
-        last_pos = macropad.encoder
-        note_activity()
 
 # --- Modal helpers ---
 is_running = False
@@ -803,12 +670,7 @@ while True:
     ev=macropad.keys.events.get()
     if ev and ev.pressed and (not is_running) and now>=cooldown_until:
         i=ev.key_number
-        if i == 11 and macropad.encoder_switch:
-            note_activity()
-            open_macro_editor()
-            load_layer(current_index)
-            cooldown_until=time.monotonic()+0.30
-        elif i<len(app["macros"]):
+        if i<len(app["macros"]):
             is_running=True; _,_,seq=app["macros"][i]
             flash_key(i); note_activity()
             try:
