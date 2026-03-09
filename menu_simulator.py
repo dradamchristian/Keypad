@@ -4,13 +4,8 @@
 Features:
 - List all layers and current key assignments.
 - Edit label/text+keystroke tokens for any key in any layer.
+- Advanced mode for action sequences (chooser/mouse/click/sleep/key chords).
 - Save edits to macros/overrides.json (device reads this at runtime).
-
-Token examples:
-  plain text
-  <ENTER>
-  <TAB>
-  <CONTROL+V>
 """
 
 from __future__ import annotations
@@ -77,6 +72,33 @@ def sequence_to_tokens(seq):
     return "".join(out)
 
 
+def sequence_to_jsonable(seq):
+    out = []
+    for item in seq:
+        if isinstance(item, str):
+            if item.startswith("Keycode."):
+                out.append({"key": item.split(".", 1)[1]})
+            else:
+                out.append(item)
+        elif isinstance(item, int):
+            out.append({"key": f"KEY_{item}"})
+        elif isinstance(item, float):
+            out.append({"sleep": item})
+        elif isinstance(item, tuple):
+            keys = []
+            for k in item:
+                if isinstance(k, str) and k.startswith("Keycode."):
+                    keys.append(k.split(".", 1)[1])
+                elif isinstance(k, int):
+                    keys.append(f"KEY_{k}")
+            out.append({"key_chord": keys})
+        elif isinstance(item, dict):
+            out.append(item)
+        elif callable(item):
+            out.append({"note": "callable (cannot serialize)"})
+    return out
+
+
 def read_overrides():
     if not OVERRIDES_PATH.exists():
         return {}
@@ -97,10 +119,16 @@ def apply_overrides(filename: str, app: dict, data: dict):
             continue
         while len(macros) <= idx:
             macros.append((0x202020, "", []))
+
+        if isinstance(payload.get("sequence"), list):
+            seq = payload.get("sequence", [])
+        else:
+            seq = [payload.get("tokens", "")]
+
         macros[idx] = (
             int(payload.get("color", 0x202020)),
             str(payload.get("label", ""))[:8],
-            [payload.get("tokens", "")],
+            seq,
         )
     out = dict(app)
     out["macros"] = macros
@@ -114,7 +142,10 @@ def show_layer(path: Path, data: dict):
         if i < len(app.get("macros", [])):
             color, label, seq = app["macros"][i]
             token_view = seq[0] if seq and isinstance(seq[0], str) else sequence_to_tokens(seq)
-            print(f"K{i+1:02d}  {label or '(empty)':8}  color={int(color):06X}  {token_view}")
+            extra = ""
+            if any(isinstance(x, dict) for x in seq):
+                extra = "  [advanced]"
+            print(f"K{i+1:02d}  {label or '(empty)':8}  color={int(color):06X}  {token_view}{extra}")
         else:
             print(f"K{i+1:02d}  (unassigned)")
 
@@ -148,21 +179,42 @@ def interactive_edit(files: list[Path]):
         base_label = base[key_idx][1] if key_idx < len(base) else ""
         base_color = int(base[key_idx][0]) if key_idx < len(base) else 0x202020
         base_tokens = sequence_to_tokens(base[key_idx][2]) if key_idx < len(base) else ""
+        base_sequence = sequence_to_jsonable(base[key_idx][2]) if key_idx < len(base) else []
 
         print("Press Enter to keep current value.")
         new_label = input(f"Label [{current.get('label', base_label)}]: ").strip()
-        new_tokens = input(f"Macro tokens [{current.get('tokens', base_tokens)}]: ").strip()
+        mode = input("Edit mode: (t)okens or (a)dvanced JSON [t]: ").strip().lower() or "t"
         clear = input("Clear override for this key? (y/N): ").strip().lower() == "y"
 
         layer = data.get(path.name, {})
         if clear:
             layer.pop(str(key_idx), None)
         else:
-            layer[str(key_idx)] = {
+            entry = {
                 "label": (new_label if new_label else current.get("label", base_label))[:8],
-                "tokens": new_tokens if new_tokens else current.get("tokens", base_tokens),
                 "color": int(current.get("color", base_color)),
             }
+            if mode == "a":
+                current_seq = current.get("sequence", base_sequence)
+                print("Current sequence JSON:")
+                print(json.dumps(current_seq, indent=2))
+                print("Paste new sequence JSON (single line). Leave blank to keep current.")
+                raw = input("sequence JSON: ").strip()
+                if raw:
+                    try:
+                        parsed = json.loads(raw)
+                        if not isinstance(parsed, list):
+                            raise ValueError("Sequence must be a JSON list")
+                        entry["sequence"] = parsed
+                    except Exception as exc:
+                        print(f"Invalid JSON ({exc}), keeping current sequence")
+                        entry["sequence"] = current.get("sequence", base_sequence)
+                else:
+                    entry["sequence"] = current.get("sequence", base_sequence)
+            else:
+                new_tokens = input(f"Macro tokens [{current.get('tokens', base_tokens)}]: ").strip()
+                entry["tokens"] = new_tokens if new_tokens else current.get("tokens", base_tokens)
+            layer[str(key_idx)] = entry
         data[path.name] = layer
         write_overrides(data)
         print(f"Saved {OVERRIDES_PATH}")

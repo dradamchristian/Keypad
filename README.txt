@@ -7,19 +7,43 @@ PC macro menu/editor (recommended workflow)
 - Pick a layer (rotary submenu equivalent), then pick a key (1-12).
 - Edit:
   - label (what appears on the device)
-  - macro tokens (typed text + keystrokes)
+  - quick token mode (typed text + keystrokes)
+  - advanced JSON mode (for chooser options, biomarker wizard, extra-work email flow, sleep delays, mouse movement/click)
 - Save. Changes go to `macros/overrides.json`.
 
-Token syntax for macro editor
+Token syntax for quick macro editor
 - Plain text types directly.
 - Single key: `<ENTER>`, `<TAB>`, `<F5>`
 - Chord: `<CONTROL+V>`, `<SHIFT+TAB>`
 
+Advanced sequence JSON format (editor advanced mode)
+- Plain text: `"some text"`
+- Single key: `{ "key": "ENTER" }`
+- Chord: `{ "key_chord": ["CONTROL", "V"] }`
+- Delay: `{ "sleep": 0.25 }`
+- Mouse move: `{ "mouse_move": { "x": 120, "y": -40, "wheel": 0 } }`
+- Mouse click: `{ "mouse_click": "left" }` (`left`, `right`, `middle`)
+- Keep existing report flows:
+  - `{ "choose": { ... } }`
+  - `{ "choose_multi": { ... } }`
+  - `{ "bio_wizard": true }`
+  - `{ "extra_work_email": true }`
+
 Device behavior
 - Existing macro `.py` files remain unchanged.
 - On boot, device loads base layer files and applies `macros/overrides.json` on top.
+- Overrides now support either:
+  - `tokens` (simple text/key tokens), or
+  - `sequence` (advanced JSON action list).
 
 Testing menu changes without loading to device each time
 - Preview all layers: `python menu_simulator.py`
 - Preview one layer: `python menu_simulator.py --layer 02_reports.py`
 - Edit from PC menu: `python menu_simulator.py --edit`
+
+Build a standalone Windows app (no Python install)
+1. On your Windows PC, install PyInstaller once: `pip install pyinstaller`
+2. Build exe from repo root:
+   - `pyinstaller --onefile --name keypad-editor menu_simulator.py`
+3. The executable will be in `dist/keypad-editor.exe`.
+4. Keep `macros/` next to the exe so `overrides.json` is saved to your keypad repo.
