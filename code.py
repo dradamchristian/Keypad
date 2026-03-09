@@ -2,7 +2,7 @@
 # Breathing LEDs per-layer + idle dim + OLED blanking + reporting helpers
 # Screen wakes on key press, encoder press, or encoder rotation
 
-import os, time, math, displayio, terminalio
+import os, time, math, json, displayio, terminalio
 from adafruit_display_text import label
 from adafruit_macropad import MacroPad
 from adafruit_hid.keycode import Keycode
@@ -63,6 +63,8 @@ flash_index = None
 last_activity = time.monotonic()
 screen_off = False
 last_encoder = macropad.encoder  # track dial movement
+
+OVERRIDES_PATH = "/macros/overrides.json"
 
 # --- Helpers ---
 def _mix(a, b, t): return a + (b - a) * t
@@ -174,11 +176,272 @@ def send_text_uk(text, char_delay=None):
         i += 1
     flush_word()
 
+
+def _key_name_to_code(name):
+    return getattr(Keycode, name, None)
+
+
+def _code_to_key_name(code):
+    for attr in dir(Keycode):
+        if attr.isupper() and getattr(Keycode, attr) == code:
+            return attr
+    return None
+
+
+def sequence_to_tokens(seq):
+    tokens = []
+    for item in seq:
+        if isinstance(item, str):
+            if item.startswith("Keycode."):
+                tokens.append("<{}>".format(item.split(".", 1)[1]))
+            else:
+                tokens.append(item)
+        elif isinstance(item, int):
+            name = _code_to_key_name(item)
+            if name:
+                tokens.append("<{}>".format(name))
+        elif isinstance(item, tuple):
+            names = []
+            for k in item:
+                if isinstance(k, str) and k.startswith("Keycode."):
+                    names.append(k.split(".", 1)[1])
+                elif isinstance(k, int):
+                    nk = _code_to_key_name(k)
+                    if nk:
+                        names.append(nk)
+            if names:
+                tokens.append("<{}>".format("+".join(names)))
+    return "".join(tokens)
+
+
+def tokens_to_sequence(text):
+    seq = []
+    buf = []
+    i = 0
+    while i < len(text):
+        if text[i] == "<":
+            j = text.find(">", i + 1)
+            if j == -1:
+                buf.append(text[i])
+                i += 1
+                continue
+            if buf:
+                seq.append("".join(buf))
+                buf = []
+            token = text[i + 1:j].strip().upper()
+            parts = [p for p in token.split("+") if p]
+            if len(parts) == 1:
+                code = _key_name_to_code(parts[0])
+                if code is not None:
+                    seq.append(code)
+                else:
+                    seq.append("<{}>".format(token))
+            else:
+                chord = []
+                for p in parts:
+                    code = _key_name_to_code(p)
+                    if code is None:
+                        chord = []
+                        break
+                    chord.append(code)
+                if chord:
+                    seq.append(tuple(chord))
+                else:
+                    seq.append("<{}>".format(token))
+            i = j + 1
+        else:
+            buf.append(text[i])
+            i += 1
+    if buf:
+        seq.append("".join(buf))
+    return seq
+
 def drain_key_events(dt=0.05):
     t0 = time.monotonic()
     while time.monotonic() - t0 < dt:
         if not macropad.keys.events.get():
             time.sleep(0.005)
+
+
+def read_overrides():
+    try:
+        with open(OVERRIDES_PATH, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def write_overrides(data):
+    with open(OVERRIDES_PATH, "w") as f:
+        json.dump(data, f)
+
+
+def apply_layer_override(filename, base_app):
+    data = read_overrides()
+    layer = data.get(filename, {})
+    macros = list(base_app.get("macros", []))
+    max_index = len(macros)
+    for idx_txt in layer.keys():
+        try:
+            idx = int(idx_txt)
+            if idx + 1 > max_index:
+                max_index = idx + 1
+        except ValueError:
+            pass
+    while len(macros) < max_index:
+        macros.append((0x202020, "", []))
+    for idx_txt, payload in layer.items():
+        try:
+            idx = int(idx_txt)
+        except ValueError:
+            continue
+        if idx < 0 or idx >= 12:
+            continue
+        label_text = payload.get("label", "")
+        color = int(payload.get("color", 0x202020)) & 0xFFFFFF
+        seq = tokens_to_sequence(payload.get("tokens", ""))
+        macros[idx] = (color, label_text[:8], seq)
+    out = dict(base_app)
+    out["macros"] = macros
+    return out
+
+
+EDIT_CHARS = " ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789.,;:/-_@#()+!?"
+
+
+def text_editor(initial, title_text, max_len=120):
+    global is_running, last_pos
+    was_running = is_running
+    is_running = True
+    old_title = title.text
+    buffer = list(initial)
+    cursor = 0
+    base = macropad.encoder
+    done = False
+
+    def render():
+        for j in range(12):
+            key_labels[j].text = ""
+        title.text = title_text
+        key_labels[0].text = "{}".format("".join(buffer[-14:]) or "(empty)")
+        key_labels[3].text = "Char: {}".format(EDIT_CHARS[cursor])
+        key_labels[6].text = "K0 add  K1 bksp"
+        key_labels[9].text = "K2 save K3 cancel"
+
+    render(); note_activity()
+    try:
+        while True:
+            pos = macropad.encoder
+            if pos != base:
+                delta = pos - base
+                base = pos
+                cursor = (cursor + delta) % len(EDIT_CHARS)
+                render(); note_activity()
+            ev = macropad.keys.events.get()
+            if ev and ev.pressed:
+                k = ev.key_number
+                if k == 0 and len(buffer) < max_len:
+                    buffer.append(EDIT_CHARS[cursor]); render()
+                elif k == 1 and buffer:
+                    buffer.pop(); render()
+                elif k == 2:
+                    done = True
+                    break
+                elif k == 3:
+                    done = False
+                    break
+                note_activity()
+            update_breathing(); time.sleep(0.02)
+    finally:
+        load_layer(current_index)
+        title.text = old_title
+        is_running = was_running
+        last_pos = macropad.encoder
+        note_activity()
+    return "".join(buffer) if done else None
+
+
+def open_macro_editor():
+    global is_running, last_pos
+    was_running = is_running
+    is_running = True
+    old_title = title.text
+    file_idx = current_index
+    key_idx = 0
+    mode = 0
+
+    def current_filename():
+        return macro_files[file_idx]
+
+    def get_macro_tuple():
+        m = app.get("macros", [])
+        if key_idx < len(m):
+            return m[key_idx]
+        return (0x202020, "", [])
+
+    def render():
+        for j in range(12):
+            key_labels[j].text = ""
+        col, lbl, seq = get_macro_tuple()
+        title.text = "Editor"
+        key_labels[0].text = "L:{}".format(current_filename()[:10])
+        key_labels[3].text = "K{} {}".format(key_idx + 1, lbl or "(empty)")
+        key_labels[6].text = ["K4 label", "K4 macro", "K4 clr"][mode]
+        key_labels[9].text = "Rot L/K  K8 mode"
+        key_labels[10].text = "K9 edit"
+        key_labels[11].text = "K10 done"
+
+    base = macropad.encoder
+    last_pos = base
+    render(); note_activity()
+    try:
+        while True:
+            pos = macropad.encoder
+            if pos != base:
+                delta = pos - base
+                base = pos
+                if macropad.encoder_switch:
+                    key_idx = (key_idx + delta) % 12
+                else:
+                    file_idx = (file_idx + delta) % len(macro_files)
+                    load_layer(file_idx)
+                render(); note_activity()
+            ev = macropad.keys.events.get()
+            if ev and ev.pressed:
+                k = ev.key_number
+                if k == 8:
+                    mode = (mode + 1) % 3
+                elif k == 9:
+                    data = read_overrides()
+                    fn = current_filename()
+                    layer = data.get(fn, {})
+                    current = layer.get(str(key_idx), {})
+                    if mode == 0:
+                        new_label = text_editor(current.get("label", get_macro_tuple()[1]), "Label", 8)
+                        if new_label is not None:
+                            tokens = current.get("tokens", sequence_to_tokens(get_macro_tuple()[2]))
+                            layer[str(key_idx)] = {"label": new_label, "tokens": tokens, "color": int(get_macro_tuple()[0])}
+                    elif mode == 1:
+                        new_tokens = text_editor(current.get("tokens", sequence_to_tokens(get_macro_tuple()[2])), "Macro", 140)
+                        if new_tokens is not None:
+                            label_text = current.get("label", get_macro_tuple()[1])
+                            layer[str(key_idx)] = {"label": label_text[:8], "tokens": new_tokens, "color": int(get_macro_tuple()[0])}
+                    else:
+                        if str(key_idx) in layer:
+                            del layer[str(key_idx)]
+                    data[fn] = layer
+                    write_overrides(data)
+                    load_layer(file_idx)
+                elif k == 10:
+                    break
+                render(); note_activity()
+            update_breathing(); time.sleep(0.02)
+    finally:
+        load_layer(current_index)
+        title.text = old_title
+        is_running = was_running
+        last_pos = macropad.encoder
+        note_activity()
 
 # --- Modal helpers ---
 is_running = False
@@ -522,7 +785,8 @@ def load_layer(idx):
     filename=macro_files[idx]
     with open(macros_folder+"/"+filename,"r") as f: code=f.read()
     ns={}; exec(code,ns)
-    app=ns.get("app",{"name":filename,"macros":[]})
+    base_app=ns.get("app",{"name":filename,"macros":[]})
+    app=apply_layer_override(filename, base_app)
     title.text=app.get("name",filename)
     for i in range(12):
         key_labels[i].text=app["macros"][i][1] if i<len(app["macros"]) else ""
@@ -539,7 +803,12 @@ while True:
     ev=macropad.keys.events.get()
     if ev and ev.pressed and (not is_running) and now>=cooldown_until:
         i=ev.key_number
-        if i<len(app["macros"]):
+        if i == 11 and macropad.encoder_switch:
+            note_activity()
+            open_macro_editor()
+            load_layer(current_index)
+            cooldown_until=time.monotonic()+0.30
+        elif i<len(app["macros"]):
             is_running=True; _,_,seq=app["macros"][i]
             flash_key(i); note_activity()
             try:
