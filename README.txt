@@ -41,6 +41,21 @@ Testing menu changes without loading to device each time
 - Preview one layer: `python menu_simulator.py --layer 02_reports.py`
 - Edit from PC menu: `python menu_simulator.py --edit`
 
+
+Locked-down NHS PCs: does this require anything installed on the PC?
+- If you need a full interactive menu editor on the PC, then yes: some host software (Python app, exe, or listener) must exist on that PC.
+- If policy forbids installs/running custom apps, then a PC-side editor is not feasible.
+
+What works with zero PC install
+- Device-only operation via standard USB HID keystrokes/mouse actions from preloaded macros.
+- Optional constrained on-device edit mode (CircuitPython UI on the MacroPad screen) that edits `/macros/overrides.json` directly.
+- Plug-and-play usage is still possible, but editing UX is limited by keypad + encoder input.
+
+Shipping guidance for locked-down environments
+1. Ship with all required report shortcuts preconfigured.
+2. Include only small, safe on-device edits (label tweaks, choose from preset snippets/actions).
+3. Keep advanced macro authoring as an offline admin workflow on a non-locked machine before deployment.
+
 Build a standalone Windows app (no Python install)
 1. On your Windows PC, install PyInstaller once: `pip install pyinstaller`
 2. Build exe from repo root:
