@@ -2,7 +2,7 @@
 # Breathing LEDs per-layer + idle dim + OLED blanking + reporting helpers
 # Screen wakes on key press, encoder press, or encoder rotation
 
-import os, time, math, displayio, terminalio
+import os, time, math, json, displayio, terminalio
 from adafruit_display_text import label
 from adafruit_macropad import MacroPad
 from adafruit_hid.keycode import Keycode
@@ -63,6 +63,8 @@ flash_index = None
 last_activity = time.monotonic()
 screen_off = False
 last_encoder = macropad.encoder  # track dial movement
+
+OVERRIDES_PATH = "/macros/overrides.json"
 
 # --- Helpers ---
 def _mix(a, b, t): return a + (b - a) * t
@@ -174,11 +176,139 @@ def send_text_uk(text, char_delay=None):
         i += 1
     flush_word()
 
+
+def _key_name_to_code(name):
+    return getattr(Keycode, name, None)
+
+
+def _code_to_key_name(code):
+    for attr in dir(Keycode):
+        if attr.isupper() and getattr(Keycode, attr) == code:
+            return attr
+    return None
+
+
+def sequence_to_tokens(seq):
+    tokens = []
+    for item in seq:
+        if isinstance(item, str):
+            if item.startswith("Keycode."):
+                tokens.append("<{}>".format(item.split(".", 1)[1]))
+            else:
+                tokens.append(item)
+        elif isinstance(item, int):
+            name = _code_to_key_name(item)
+            if name:
+                tokens.append("<{}>".format(name))
+        elif isinstance(item, tuple):
+            names = []
+            for k in item:
+                if isinstance(k, str) and k.startswith("Keycode."):
+                    names.append(k.split(".", 1)[1])
+                elif isinstance(k, int):
+                    nk = _code_to_key_name(k)
+                    if nk:
+                        names.append(nk)
+            if names:
+                tokens.append("<{}>".format("+".join(names)))
+    return "".join(tokens)
+
+
+def tokens_to_sequence(text):
+    seq = []
+    buf = []
+    i = 0
+    while i < len(text):
+        if text[i] == "<":
+            j = text.find(">", i + 1)
+            if j == -1:
+                buf.append(text[i])
+                i += 1
+                continue
+            if buf:
+                seq.append("".join(buf))
+                buf = []
+            token = text[i + 1:j].strip().upper()
+            parts = [p for p in token.split("+") if p]
+            if len(parts) == 1:
+                code = _key_name_to_code(parts[0])
+                if code is not None:
+                    seq.append(code)
+                else:
+                    seq.append("<{}>".format(token))
+            else:
+                chord = []
+                for p in parts:
+                    code = _key_name_to_code(p)
+                    if code is None:
+                        chord = []
+                        break
+                    chord.append(code)
+                if chord:
+                    seq.append(tuple(chord))
+                else:
+                    seq.append("<{}>".format(token))
+            i = j + 1
+        else:
+            buf.append(text[i])
+            i += 1
+    if buf:
+        seq.append("".join(buf))
+    return seq
+
 def drain_key_events(dt=0.05):
     t0 = time.monotonic()
     while time.monotonic() - t0 < dt:
         if not macropad.keys.events.get():
             time.sleep(0.005)
+
+
+def read_overrides():
+    try:
+        with open(OVERRIDES_PATH, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def write_overrides(data):
+    with open(OVERRIDES_PATH, "w") as f:
+        json.dump(data, f)
+
+
+def apply_layer_override(filename, base_app):
+    data = read_overrides()
+    layer = data.get(filename, {})
+    macros = list(base_app.get("macros", []))
+    max_index = len(macros)
+    for idx_txt in layer.keys():
+        try:
+            idx = int(idx_txt)
+            if idx + 1 > max_index:
+                max_index = idx + 1
+        except ValueError:
+            pass
+    while len(macros) < max_index:
+        macros.append((0x202020, "", []))
+    for idx_txt, payload in layer.items():
+        try:
+            idx = int(idx_txt)
+        except ValueError:
+            continue
+        if idx < 0 or idx >= 12:
+            continue
+        label_text = payload.get("label", "")
+        color = int(payload.get("color", 0x202020)) & 0xFFFFFF
+        seq = tokens_to_sequence(payload.get("tokens", ""))
+        macros[idx] = (color, label_text[:8], seq)
+    out = dict(base_app)
+    out["macros"] = macros
+    return out
+
+
+
+# PC-side editor writes /macros/overrides.json; device only loads overrides.
+
 
 # --- Modal helpers ---
 is_running = False
@@ -522,7 +652,8 @@ def load_layer(idx):
     filename=macro_files[idx]
     with open(macros_folder+"/"+filename,"r") as f: code=f.read()
     ns={}; exec(code,ns)
-    app=ns.get("app",{"name":filename,"macros":[]})
+    base_app=ns.get("app",{"name":filename,"macros":[]})
+    app=apply_layer_override(filename, base_app)
     title.text=app.get("name",filename)
     for i in range(12):
         key_labels[i].text=app["macros"][i][1] if i<len(app["macros"]) else ""
