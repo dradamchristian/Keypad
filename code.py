@@ -2,10 +2,11 @@
 # Breathing LEDs per-layer + idle dim + OLED blanking + reporting helpers
 # Screen wakes on key press, encoder press, or encoder rotation
 
-import os, time, math, json, displayio, terminalio
+import os, time, math, json, displayio, terminalio, usb_hid
 from adafruit_display_text import label
 from adafruit_macropad import MacroPad
 from adafruit_hid.keycode import Keycode
+from adafruit_hid.mouse import Mouse
 
 # --- Typing speed ---
 TYPE_CHAR_DELAY       = 0.0015
@@ -28,6 +29,7 @@ SCREEN_OFF_TIMEOUT    = 600.0  # set to 3.0 for quick testing
 # --- Setup ---
 macropad = MacroPad()
 display = macropad.display
+mouse = Mouse(usb_hid.devices)
 
 # UK quote key alias (some builds expose QUOTE, others APOSTROPHE)
 try:
@@ -256,6 +258,60 @@ def tokens_to_sequence(text):
         seq.append("".join(buf))
     return seq
 
+
+def sequence_to_jsonable(seq):
+    out = []
+    for item in seq:
+        if isinstance(item, tuple):
+            keys = []
+            for k in item:
+                name = _code_to_key_name(k) if isinstance(k, int) else None
+                keys.append(name if name else str(k))
+            out.append({"key_chord": keys})
+        elif isinstance(item, int):
+            name = _code_to_key_name(item)
+            out.append({"key": name if name else item})
+        elif isinstance(item, str):
+            if item.startswith("Keycode."):
+                out.append({"key": item.split(".", 1)[1]})
+            else:
+                out.append(item)
+        elif isinstance(item, float):
+            out.append({"sleep": item})
+        elif isinstance(item, dict):
+            out.append(item)
+    return out
+
+
+def jsonable_to_sequence(items):
+    seq = []
+    for item in items:
+        if isinstance(item, str):
+            seq.append(item)
+        elif isinstance(item, (int, float)):
+            seq.append(float(item))
+        elif isinstance(item, dict):
+            if "sleep" in item:
+                seq.append(float(item.get("sleep", 0.0)))
+            elif "key" in item:
+                key = str(item.get("key", "")).upper()
+                code = _key_name_to_code(key)
+                if code is not None:
+                    seq.append(code)
+            elif "key_chord" in item and isinstance(item["key_chord"], list):
+                chord = []
+                for key in item["key_chord"]:
+                    code = _key_name_to_code(str(key).upper())
+                    if code is None:
+                        chord = []
+                        break
+                    chord.append(code)
+                if chord:
+                    seq.append(tuple(chord))
+            elif any(k in item for k in ("choose", "choose_multi", "bio_wizard", "extra_work_email", "mouse_move", "mouse_click")):
+                seq.append(item)
+    return seq
+
 def drain_key_events(dt=0.05):
     t0 = time.monotonic()
     while time.monotonic() - t0 < dt:
@@ -299,7 +355,10 @@ def apply_layer_override(filename, base_app):
             continue
         label_text = payload.get("label", "")
         color = int(payload.get("color", 0x202020)) & 0xFFFFFF
-        seq = tokens_to_sequence(payload.get("tokens", ""))
+        if isinstance(payload.get("sequence"), list):
+            seq = jsonable_to_sequence(payload.get("sequence", []))
+        else:
+            seq = tokens_to_sequence(payload.get("tokens", ""))
         macros[idx] = (color, label_text[:8], seq)
     out = dict(base_app)
     out["macros"] = macros
@@ -640,6 +699,15 @@ def run_sequence(seq):
             biomarker_wizard()
         elif isinstance(item,dict) and "extra_work_email" in item:
             extra_work_email_flow()
+        elif isinstance(item,dict) and "mouse_move" in item:
+            cfg = item.get("mouse_move", {})
+            mouse.move(x=int(cfg.get("x", 0)), y=int(cfg.get("y", 0)), wheel=int(cfg.get("wheel", 0)))
+            time.sleep(0.02)
+        elif isinstance(item,dict) and "mouse_click" in item:
+            btn = str(item.get("mouse_click", "left")).lower()
+            button = Mouse.LEFT_BUTTON if btn == "left" else (Mouse.RIGHT_BUTTON if btn == "right" else Mouse.MIDDLE_BUTTON)
+            mouse.click(button)
+            time.sleep(0.02)
 
 # --- Macros ---
 macros_folder = "/macros"
